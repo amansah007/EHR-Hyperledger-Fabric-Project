@@ -119,39 +119,6 @@ class ehrChainCode extends Contract {
         return stringify(record);
     }
 
-    // this function 
-   async grantAccess(ctx, args) {
-    const {patientId, doctorIdToGrant} = JSON.parse(args);
-    console.log("ARGS-RWA", args)
-    console.log("ARGS", patientId, doctorIdToGrant)
-        
-     const { role, uuid: callerId } = this.getCallerAttributes(ctx);
-
-        if (role !== 'patient') {
-            throw new Error('Only patients can grant access');
-        }
-
-        if (callerId !== patientId) {
-            throw new Error('Caller is not the owner of this patient record');
-        }
-
-        const patientJSON = await ctx.stub.getState(patientId);
-        if (!patientJSON || patientJSON.length === 0) {
-            throw new Error(`Patient ${patientId} not found`);
-        }
-
-        const patient = JSON.parse(patientJSON.toString());
-
-        if (patient.authorizedDoctors.includes(doctorIdToGrant)) {
-            throw new Error(`Doctor ${doctorIdToGrant} already authorized`);
-        }
-
-        patient.authorizedDoctors.push(doctorIdToGrant);
-        await ctx.stub.putState(patientId, Buffer.from(stringify(patient)));
-
-        return `Access granted to doctor ${doctorIdToGrant}`;
-    }
-
     getCallerAttributes(ctx) {
       const role = ctx.clientIdentity.getAttributeValue('role');
       const uuid = ctx.clientIdentity.getAttributeValue('uuid');
@@ -270,7 +237,7 @@ class ehrChainCode extends Contract {
 
     async getAllRecordsByPatientId(ctx, args) {
         const {patientId} = JSON.parse(args);
-        const iterator = await ctx.stub.getStateByPartialCompositeKey('record', [patientId]);
+        const iterator =  ctx.stub.getStateByPartialCompositeKey('record', [patientId]);
         const results = [];
 
         for await (const res of iterator) {
@@ -388,28 +355,155 @@ class ehrChainCode extends Contract {
 
 
     // get patient details by id
+    async getPatientById(ctx, args){
+        
+        // Checks 
+        const {patientId} = JSON.parse(args)
 
-    // get all patient 
+        if (!patientId || typeof patientId != 'string'){
+            throw new Error('Input is invalid')
+        }
+
+        const {role, uuid:callerId} = this.getCallerAttributes(ctx);
+        const orgMSP = ctx.clientIdentity.getMSPID();
+
+        // read from the ledger 
+        const patientJSON = await ctx.stub.getState(`patient-${patientId}`)
+
+        if(!patientJSON || patientJSON.length == 0){
+            throw new Error("Patient Not found")
+        }
+
+        const patient = JSON.parse(patientJSON.toString());     
+        const isOwner = role === 'patient' && callerId === patientId && orgMSP === 'Org1MSP';
+        const isAuthorizedDoctor = role === 'doctor' && orgMSP === 'Org1MSP' && Array.isArray(patient.authorizedDoctors) && patient.authorizedDoctors.includes(callerId);
+        
+        if (!isOwner && !isAuthorizedDoctor){
+            throw new Error("not authorized")
+        }
+
+        return JSON.stringify(patient);
+
+    }
+
+    async getAllPatient(ctx){
+        // who is hte caller -- caller authentication 
+        // loop through all the patient and return --> need to be stored in something 
+
+        const {role, uuid:callerId} = this.getCallerAttributes(ctx);
+        const orgMSP = ctx.clientIdentity.getMSPID();
+
+        if (role !== 'hospital' || orgMSP !== 'Org1MSP') {
+            throw new Error('Not authorized to list patients');
+        }
+
+
+        const iterator =  ctx.stub.getStateByRange('patient-', 'patient.')
+
+        const results = [];
+
+        for await (const res of iterator) {
+            results.push(JSON.parse(res.value.toString('utf8')));
+        }
+
+         return JSON.stringify(results);
+
+    }
 
     // get patient record by doctor
 
+    async getPatientrecordByDoctor(ctx, args){
+        // who is the caller 
+        // get the role of caller 
+        // get te msp 
+        // check wether caller is authorized or not 
+        // return it 
+
+        const {role, uuid:callerId} = this.getCallerAttributes(ctx);
+        const orgMSP = ctx.clientIdentity.getMSPID();
+
+        if (role !== 'doctor' || orgMSP !== 'Org1MSP') {
+            throw new Error('only doctor');
+        }
+
+        const { patientId } = JSON.parse(args);
+        if (!patientId || typeof patientId !== 'string') {
+            throw new Error('patientId is required and must be a string');
+        }
+
+        const patientJSON = await ctx.stub.getState(`patient-${patientId}`);
+        if (!patientJSON || patientJSON.length === 0) {
+            throw new Error('Not authorized to view this patient');
+        }
+        const patient = JSON.parse(patientJSON.toString());
+        if (!Array.isArray(patient.authorizedDoctors) || !patient.authorizedDoctors.includes(callerId)) {
+            throw new Error('Not authorized to view this patient');
+        }
+        const iterator = ctx.stub.getStateByPartialCompositeKey('record', [patientId]);
+        const results = [];
+        for await (const res of iterator) {
+            results.push(JSON.parse(res.value.toString('utf8')));
+        }
+        return JSON.stringify(results);
+    }
+
     // issue insurance 
+    async issueInsurance(ctx, args) {
+        /// who can issue insurance -- agent 
+        // to whome they can issue -- to ptient 
+        // agent will verify wether its applicable for insurance or not offchain 
+        // write to the ledger 
 
-    // create claim 
+        const { role, uuid: callerId } = this.getCallerAttributes(ctx);
+        const orgMSP = ctx.clientIdentity.getMSPID();
+        if (role !== 'agent' || orgMSP !== 'Org2MSP') {
+            throw new Error('Only agents');
+        }
 
-    // get claim info
+        const agentJSON = await ctx.stub.getState(callerId);
+        if (!agentJSON || agentJSON.length === 0) {
+            throw new Error('Agent is not onboarded');
+        }
+        const agent = JSON.parse(agentJSON.toString());
+        if (agent.agentId !== callerId || !agent.insuranceCompany) {
+            throw new Error('Agent is not onboarded');
+        }
 
-    // approve claim
+        const { patientId, coverageAmount, startDate, endDate } = JSON.parse(args);
 
-    // onboard Researchers 
-    
-    // send consent request to patient
+        if (!patientId || typeof patientId !== 'string') {
+            throw new Error('patientId is required and must be a string');
+        }
+        const amount = Number(coverageAmount);
+        if (!Number.isSafeInteger(amount) || amount <= 0) {
+            throw new Error('coverageAmount must be a positive whole number');
+        }
+        const datePattern = /^\d{4}-\d{2}-\d{2}$/;
+        if (!datePattern.test(startDate) || !datePattern.test(endDate) || endDate <= startDate) {
+            throw new Error('Dates must be YYYY-MM-DD and endDate must be after startDate');
+        }
+                const patientJSON = await ctx.stub.getState(`patient-${patientId}`);
+        if (!patientJSON || patientJSON.length === 0) {
+            throw new Error(`Patient ${patientId} not found`);
+        }
+        const policyId = `POL-${ctx.stub.getTxID()}`;
+        const issuedAt = ctx.stub.getDateTimestamp().toISOString();
 
-    // get patient data for Researchers 
-
-    // issue reward to patient 
-    
-    // claim reward - by patient
+        const policy = {
+            policyId,
+            patientId,
+            agentId: callerId,
+            insuranceCompany: agent.insuranceCompany,
+            coverageAmount: amount,
+            startDate,
+            endDate,
+            status: 'ACTIVE',
+            issuedAt
+        };
+        const policyKey = ctx.stub.createCompositeKey('policy', [patientId, policyId]);
+        await ctx.stub.putState(policyKey, Buffer.from(stringify(policy)));
+        return JSON.stringify({ message: `Policy ${policyId} issued`, policyId });
+    }
 
 }
 
