@@ -91,4 +91,45 @@ fabric-ca-client revoke \
   --caname ca-org1 \
   --tls.certfiles ${PWD}/organizations/fabric-ca/org1/ca-cert.pem
   ```
-  
+
+  - still able ot get the user details 
+  ![alt text](image-4.png)
+
+  Reason - thre is two place where its stored - WHO IS TRUSTED 
+  - CA data base and Channel Config
+
+  STEPS 
+  - downloads the channel's current configuration from the orderer, as Org1's admin, into a file
+  - decode it to readable JSON
+  ```
+  configtxlator proto_decode --input config_block.pb --type common.Block --output config_block.json
+
+jq '.data.data[0].payload.data.config' config_block.json > config.json
+
+jq '.channel_group.groups.Application.groups.Org1MSP.values.MSP.value.config.revocation_list' config.json
+```
+
+- 
+
+```
+CRL=$(base64 -w 0 ~/fabric-lab/org1-admin/msp/crls/crl.pem)
+
+jq --arg crl "$CRL" \
+  '.channel_group.groups.Application.groups.Org1MSP.values.MSP.value.config.revocation_list = [$crl]' \
+  config.json > modified_config.json
+
+jq '.channel_group.groups.Application.groups.Org1MSP.values.MSP.value.config.revocation_list' modified_config.json
+```
+
+```
+configtxlator proto_encode --input config.json --type common.Config --output config.pb
+configtxlator proto_encode --input modified_config.json --type common.Config --output modified_config.pb
+
+configtxlator compute_update --channel_id mychannel \
+  --original config.pb --updated modified_config.pb --output config_update.pb
+
+configtxlator proto_decode --input config_update.pb --type common.ConfigUpdate --output config_update.json
+jq '.write_set.groups.Application.groups | keys' config_update.json
+```
+
+![alt text](image-5.png)
